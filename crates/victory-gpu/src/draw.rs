@@ -1080,9 +1080,9 @@ impl State {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        // Align with clamp GROUPS (4096): 2^16 still hung AMD past cutscene
-        // with LOOP_LIMIT 1024 (run-20261127-044203 compute EI trail).
-        const DISPATCH_GROUPS: u64 = 4096;
+        // Align with clamp GROUPS (1024): 4096 still hung when one list packed
+        // many mid-size 3D dispatches (run-20261127-045345 pure compute trail).
+        const DISPATCH_GROUPS: u64 = 1024;
         let groups = u64::from(x) * u64::from(y.max(1)) * u64::from(z.max(1));
         if start.is_none() && groups > DISPATCH_GROUPS {
             once!(x, y, z, "a dispatch past the host's group budget dropped");
@@ -1263,9 +1263,8 @@ impl State {
             crate::pipeline::note_why("skipped kind mesh".into());
             return;
         }
-        // Match indirect mesh clamp (MESH_GROUPS): huge 1D mesh launches with
-        // translated spins still TDR on AMD after null-UAV drops (042742).
-        const MESH_GROUPS: u32 = 4096;
+        // Match indirect mesh clamp (MESH_GROUPS).
+        const MESH_GROUPS: u32 = 1024;
         if x > MESH_GROUPS {
             once!(x, "a mesh dispatch past the host's group limit dropped");
             DROPPED.fetch_add(1, Ordering::Relaxed);
