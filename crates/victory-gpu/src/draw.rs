@@ -1283,7 +1283,10 @@ impl State {
             && !null_pipe
                 .as_ref()
                 .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name))
-            && list.charge_groups(u64::from(x))
+            // Weight mesh groups: `mesh 1` barely touched the list budget so
+            // ba8d/b375 floods still TDRd (run-20261127-051357). Match the
+            // clamp's per-group thread factor.
+            && list.charge_groups(u64::from(x.max(1)) * 128)
             && match list.list.cast::<ID3D12GraphicsCommandList6>() {
                 Ok(l6) => {
                     #[cfg(feature = "diagnostics")]

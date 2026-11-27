@@ -304,9 +304,9 @@ as **spotlights for code**, not a quarantine list to enlarge.
    `Some` + null descriptor; null-UAV drop never armed).
 6. Dynamic tables: failed `make_at` arms `null_uav`; cache hits re-check
    `slot_live` (`bind` clears the flag each draw — run-042156 compute EI).
-7. Clamp `GROUPS` / mesh / direct ≤512; per-list direct group budget 2048;
-   LoopLimit default 256 (045903: ten `5x5x33` under per-dispatch cap still
-   hung — packing, not one huge dispatch).
+7. Clamp `GROUPS` / mesh / direct ≤512; per-list budget 1024 (mesh ×128);
+   LoopLimit default 64 (051357: ba8d/b375 `mesh 1` flood after budgets
+   worked on compute/EI).
 
 ### Fingerprint shift (2026-11-27)
 
@@ -353,6 +353,9 @@ as **spotlights for code**, not a quarantine list to enlarge.
 - Next: list budget fired for direct compute, then **`0x887A0007`** on a
   pure **mesh EI kind 10** flood (`7972997d…` ×30). EI mesh/dispatch now
   charges the same list budget (worst-case `max×512`).
+- Next: budgets firing, but hang trail is **tiny direct mesh** (`ba8d`/
+  `b375` `mesh 1`…, also `8c8f`/`87836f`). Null-UAV drop hit ba8d once
+  then later draws ran. Mesh list charge ×128; list cap 1024; LoopLimit 64.
 
 ### Repro after rebuild (no new hashes)
 

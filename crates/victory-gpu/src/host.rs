@@ -2510,9 +2510,9 @@ impl HostList {
     /// Charges `groups` against this list's direct compute/mesh budget.
     /// Returns false when the list is already at the cap (caller drops the work).
     pub(crate) fn charge_groups(&self, groups: u64) -> bool {
-        // ~2× the per-dispatch ceiling: stops packing ten mid-size 3D
-        // dispatches into one TDR window while still allowing a couple.
-        const LIST_GROUPS: u64 = 2048;
+        // Mesh charges ×128 (see dispatch_mesh); ~8× `mesh 1` per list.
+        // 2048 still let a ba8d/b375 mesh-1 flood TDR (run-20261127-051357).
+        const LIST_GROUPS: u64 = 1024;
         let mut prev = self.groups.load(Ordering::Relaxed);
         loop {
             if prev >= LIST_GROUPS || prev.saturating_add(groups) > LIST_GROUPS {
