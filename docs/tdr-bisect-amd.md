@@ -302,6 +302,8 @@ as **spotlights for code**, not a quarantine list to enlarge.
    constants between SetMarker and Dispatch made hung ops look unmarked).
 5. `descriptor::host::mirror`: failed UAV create → `None` on for_draw (was
    `Some` + null descriptor; null-UAV drop never armed).
+6. Dynamic tables: failed `make_at` arms `null_uav`; cache hits re-check
+   `slot_live` (`bind` clears the flag each draw — run-042156 compute EI).
 
 ### Fingerprint shift (2026-11-27)
 
@@ -324,6 +326,10 @@ as **spotlights for code**, not a quarantine list to enlarge.
   “view the host does not allow” — `HostHeap::mirror` returned `Some` after
   failed UAV `make` (null descriptor). Fixed: for_draw unordered with no
   kept host resource → `None` so null-UAV drop fires.
+- Next: null-UAV drop fires (3 pipelines) but **`0x887A0007`** ~2 min,
+  recent ops **compute EI kind 2** (many hashes). Dynamic-table `make_at`
+  failures + cache hits after `null_uav = false` at bind left null UAVs
+  running. Fixed in `draw.rs` / `make_at` → bool + `slot_live`.
 
 ### Repro after rebuild (no new hashes)
 

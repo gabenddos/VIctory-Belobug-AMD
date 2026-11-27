@@ -197,6 +197,11 @@ fn drop_if_null_uav(null_uav: bool, pipeline: &str) -> bool {
     }
 }
 
+/// Title view that shaders write through (host create can fail → null slot).
+fn is_unordered_view(view: &View) -> bool {
+    matches!(view, View::Unordered(..) | View::Placed(true, ..))
+}
+
 /// Whether the host can run a dispatch of `x * y * z` groups.
 fn dispatch_fits(x: u32, y: u32, z: u32) -> bool {
     x <= MAX_GROUPS && y <= MAX_GROUPS && z <= MAX_GROUPS
@@ -1419,7 +1424,17 @@ impl State {
                 for u in entries.iter().filter(|u| u.kind != ResourceType::Cbv) {
                     let handle = table + u64::from(u.table_offset_dwords) * 4;
                     match crate::descriptor::view(handle) {
-                        Some(view) => readable(list, u, &view),
+                        Some(view) => {
+                            readable(list, u, &view);
+                            // Cached dynamic slots: `bind` cleared `null_uav`;
+                            // re-check live host resource (failed make_at left
+                            // a null descriptor — AMD hang, run-042156).
+                            if u.kind == ResourceType::Uav
+                                && !host.slot_live(first + u.table_offset_dwords / 8)
+                            {
+                                self.null_uav = true;
+                            }
+                        }
                         None => self.null_uav |= u.kind == ResourceType::Uav,
                     }
                 }
@@ -1440,7 +1455,14 @@ impl State {
                 for u in entries.iter().filter(|u| u.kind != ResourceType::Cbv) {
                     let handle = table + u64::from(u.table_offset_dwords) * 4;
                     match crate::descriptor::view(handle) {
-                        Some(view) => readable(list, u, &view),
+                        Some(view) => {
+                            readable(list, u, &view);
+                            if u.kind == ResourceType::Uav
+                                && !host.slot_live(first + u.table_offset_dwords / 8)
+                            {
+                                self.null_uav = true;
+                            }
+                        }
                         None => self.null_uav |= u.kind == ResourceType::Uav,
                     }
                 }
@@ -1484,7 +1506,12 @@ impl State {
                         host.constant_at(index, gpu, size);
                     }
                     Some(view) => {
-                        host.make_at(index, &view);
+                        let ok = host.make_at(index, &view);
+                        // Descriptor arrays: shaders may write slots past the
+                        // used-resource list; any refused UAV arms the drop.
+                        if !ok && is_unordered_view(&view) {
+                            self.null_uav = true;
+                        }
                         if let Some(u) = used {
                             readable(list, u, &view);
                         }

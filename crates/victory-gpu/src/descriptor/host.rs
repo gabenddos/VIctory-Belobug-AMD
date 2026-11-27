@@ -972,8 +972,8 @@ impl HostHeap {
     }
 
     /// Makes slot `index` (a dynamic one) from `view`; a null view if the
-    /// host cannot.
-    pub(crate) fn make_at(&self, index: u32, view: &View) {
+    /// host cannot. Whether the host view was made (false → null descriptor).
+    pub(crate) fn make_at(&self, index: u32, view: &View) -> bool {
         let kept = make(view, self.cpu(index));
         let ok = kept.is_some();
         if !ok {
@@ -989,6 +989,18 @@ impl HostHeap {
         } else {
             self.set_stride(index, 0);
         }
+        ok
+    }
+
+    /// Whether slot `index` still holds a live host resource (not a null
+    /// descriptor left after a refused view).
+    pub(crate) fn slot_live(&self, index: u32) -> bool {
+        self.kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(index as usize)
+            .and_then(Option::as_ref)
+            .is_some()
     }
 
     /// Makes slot `index` read nothing: a null view, or a plain sampler.
