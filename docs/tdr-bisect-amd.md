@@ -296,8 +296,12 @@ as **spotlights for code**, not a quarantine list to enlarge.
 1. Clamp zero-fill + EI without title count buffer (`indirect.rs` / `draw.rs`).
 2. **Null-UAV drop** for compute, mesh, **and** DRAW/INDEXED (same AMD hang
    class; `VICTORY_NULL_UAV_DISPATCH=1` to force-run).
-3. `run-tdr.ps1` defaults `-LoopLimit 65536` (was unset → 2^20) and prints only
-   `Last log:` (bisect paste prompts removed).
+3. `run-tdr.ps1` defaults `-LoopLimit 4096` (was 65536; still hung) and prints
+   only `Last log:` (bisect paste prompts removed).
+4. Dispatch / clamp DRED markers sit **immediately before** `Dispatch` (root
+   constants between SetMarker and Dispatch made hung ops look unmarked).
+5. `descriptor::host::mirror`: failed UAV create → `None` on for_draw (was
+   `Some` + null descriptor; null-UAV drop never armed).
 
 ### Fingerprint shift (2026-11-27)
 
@@ -313,6 +317,13 @@ as **spotlights for code**, not a quarantine list to enlarge.
   started — not the faulting op). Recent ops: compute EI then mesh EI.
   Root-SRV byte limits now apply to **compute** too (were draw/mesh only);
   sampler heap indices clamped like views.
+- Next: **AMD software timeout** (hung `DISPATCH`, breadcrumbs done). Recent
+  ops: large compute `3680x1x1` then many EI `cabb8759…`. `-LoopLimit 4096`.
+- Next (`-LoopLimit 4096`): ~7 min then **`0x887A0007`**, empty breadcrumbs,
+  recent ops **mesh EI kind 10** again. No “null UAV dropped” lines despite
+  “view the host does not allow” — `HostHeap::mirror` returned `Some` after
+  failed UAV `make` (null descriptor). Fixed: for_draw unordered with no
+  kept host resource → `None` so null-UAV drop fires.
 
 ### Repro after rebuild (no new hashes)
 

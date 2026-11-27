@@ -1221,6 +1221,23 @@ impl HostHeap {
                 self.untrack_bindless(index);
             }
         }
+        // `make` can fail (host refuses the view) and leave a null descriptor
+        // while we still held the title `View`. Returning `Some` then meant
+        // draw.rs never set `null_uav`, so mesh/compute that write the slot
+        // ran and hung AMD (RX 6600; run-20261127-040934 mesh EI trail with
+        // empty breadcrumbs after LoopLimit stopped compute spins).
+        if for_draw && is_unordered_view(&view) {
+            let live = self
+                .kept
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(index as usize)
+                .and_then(Option::as_ref)
+                .is_some();
+            if !live {
+                return None;
+            }
+        }
         Some(view)
     }
 
@@ -2864,6 +2881,11 @@ fn largest_mip(resource: &[u32; 14], desc: &[u32; 16]) -> u32 {
     }
     // Not textures the host GPU writes.
     if resource[12] & 7 != 0 { 0 } else { first }
+}
+
+/// Whether `view` is an unordered access view (title or placed).
+fn is_unordered_view(view: &View) -> bool {
+    matches!(view, View::Unordered(..) | View::Placed(true, ..))
 }
 
 /// A shader view of a texture the title placed in memory itself, as a view

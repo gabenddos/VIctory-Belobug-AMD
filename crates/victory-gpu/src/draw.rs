@@ -1085,16 +1085,21 @@ impl State {
             return;
         }
         #[cfg(feature = "diagnostics")]
+        crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || {
+            self.op_text(format!("dispatch {x}x{y}x{z}"), true, true)
+        });
+        if let (Some((param, index, _)), Some(most)) = (limit, most) {
+            // SAFETY: an open list; a dword of the program's user data.
+            unsafe { list.list.SetComputeRoot32BitConstant(param, most, index) };
+        }
+        // Marker immediately before Dispatch so DRED pairs it (root constants
+        // between SetMarker and Dispatch made hung dispatches look unmarked —
+        // AMD software timeout run-20261127-040132).
+        #[cfg(feature = "diagnostics")]
         {
             let mark = self.op_text(format!("dispatch {x}x{y}x{z}"), true, false);
             crate::host::note_recent_gpu_op(mark.clone());
             list.note_op(|| mark);
-        }
-        #[cfg(feature = "diagnostics")]
-        crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || self.op_text(format!("dispatch {x}x{y}x{z}"), true, true));
-        if let (Some((param, index, _)), Some(most)) = (limit, most) {
-            // SAFETY: an open list; a dword of the program's user data.
-            unsafe { list.list.SetComputeRoot32BitConstant(param, most, index) };
         }
         // SAFETY: an open list with everything set.
         unsafe { list.list.Dispatch(x.min(MAX_GROUPS), y, z) };
@@ -1104,6 +1109,11 @@ impl State {
                 // SAFETY: as before; a dword of the program's user data.
                 unsafe {
                     list.list.SetComputeRoot32BitConstant(param, at, index);
+                }
+                #[cfg(feature = "diagnostics")]
+                list.note_op(|| format!("dispatch continue {at}"));
+                // SAFETY: as before.
+                unsafe {
                     list.list.Dispatch((x - at).min(MAX_GROUPS), y, z);
                 }
                 at += MAX_GROUPS;

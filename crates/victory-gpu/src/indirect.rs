@@ -252,7 +252,7 @@ pub(crate) fn bound(
 ) -> Option<ID3D12Resource> {
     let bytes = validate_layout(spec, src.1, count.map(|(_, off)| off))?;
     let (c, budget, dst) = (clamp()?, list.budget()?, list.indirect_scratch(bytes)?);
-    record_clamp(c, &list.list, &dst, budget, src, count, spec).then_some(dst)
+    record_clamp(c, &list.list, &dst, budget, src, count, spec, Some(list)).then_some(dst)
 }
 
 fn record_clamp(
@@ -263,6 +263,8 @@ fn record_clamp(
     (src, src_offset): (&ID3D12Resource, u64),
     count: Option<(&ID3D12Resource, u64)>,
     (kind, stride, records): (u32, u32, u32),
+    #[cfg_attr(not(feature = "diagnostics"), allow(unused_variables))]
+    mark: Option<&HostList>,
 ) -> bool {
     let Some(bytes) = validate_layout(
         (kind, stride, records),
@@ -330,6 +332,12 @@ fn record_clamp(
             l.SetComputeRootShaderResourceView(2, count_gpu);
             l.SetComputeRootUnorderedAccessView(3, dst_gpu);
             l.SetComputeRootUnorderedAccessView(4, budget);
+            // Marker immediately before Dispatch (AMD software timeout
+            // run-20261127-040132: hung DISPATCH looked unmarked).
+            #[cfg(feature = "diagnostics")]
+            if let Some(h) = mark {
+                h.note_op(|| format!("clamp dispatch kind {kind} records {records}"));
+            }
             l.Dispatch(records.div_ceil(64), 1, 1);
         }
         l.ResourceBarrier(&[
@@ -448,6 +456,11 @@ pub(crate) fn bound_before(
         l.SetComputeRootShaderResourceView(1, src_gpu);
         l.SetComputeRootShaderResourceView(2, count_gpu);
         l.SetComputeRootUnorderedAccessView(3, dst_gpu);
+    }
+    #[cfg(feature = "diagnostics")]
+    clamps.note_op(|| format!("clamp dispatch kind {kind} records {records}"));
+    // SAFETY: open list; clamp root/PSO/UAVs set above.
+    unsafe {
         l.Dispatch(records.div_ceil(64), 1, 1);
         // Mode 7: one clamp after another, so that the budget is charged in
         // the order of the draws as it is when each clamp precedes its draw.
@@ -839,6 +852,7 @@ void main() {
             (&src_buf, ARGS_OFFSET as u64),
             Some((&count_buf, COUNT_OFFSET_1 as u64)),
             (KIND_DISPATCH, STRIDE, MAX),
+            None,
         ));
         // SAFETY: open command list, valid worker PSO/root and buffers.
         unsafe {
@@ -884,6 +898,7 @@ void main() {
             (&src_buf, ARGS_OFFSET as u64),
             Some((&count_buf, COUNT_OFFSET_2 as u64)),
             (KIND_DISPATCH, STRIDE, MAX),
+            None,
         ));
         // SAFETY: open command list, valid worker PSO/root and buffers.
         unsafe {
@@ -1007,6 +1022,7 @@ void main() {
             (&src_buf, 0),
             None,
             (KIND_INDEXED, STRIDE, RECORDS),
+            None,
         ));
         done_on(&warp.list, &dst_buf);
 
