@@ -1699,7 +1699,12 @@ impl State {
         if rects {
             once!("indexed rectangles not drawn");
         }
-        let ran = !rects && self.prepare(list, true);
+        let pipe = crate::pipeline::host_pipeline(self.pipeline as This);
+        let ran = !rects
+            && self.prepare(list, true)
+            && !pipe
+                .as_ref()
+                .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name));
         if ran {
             #[cfg(feature = "diagnostics")]
             {
@@ -1935,39 +1940,28 @@ impl State {
         let ran = match kind {
             DRAW if rect_args.is_some() => {
                 let ok = self.prepare(list, false);
-                if ok {
+                if ok && !drop_if_null_uav(self.null_uav, &p.name) {
                     for (slot, view) in &rect_vertices {
                         // SAFETY: an open list; the view names a buffer the list keeps.
                         unsafe { list.list.IASetVertexBuffers(*slot, Some(&[*view])) };
                     }
+                    true
+                } else {
+                    false
                 }
-                ok
             }
             DRAW | INDEXED => {
                 (self.topology != RECTANGLES || self.draws_rectangles())
                     && self.prepare(list, kind == INDEXED)
+                    && !drop_if_null_uav(self.null_uav, &p.name)
             }
             MESH => {
-                let ok = self.prepare_for(list, false, true);
-                if ok && self.null_uav && skip_null_uav_dispatches() {
-                    null_uav_dropped(&p.name);
-                    false
-                } else {
-                    ok
-                }
+                self.prepare_for(list, false, true) && !drop_if_null_uav(self.null_uav, &p.name)
             }
             DISPATCH => match crate::pipeline::host_pipeline(self.pipeline as This) {
                 Some(p) if p.compute => {
                     crate::twin::begin();
-                    if !self.bind(list, p, true) {
-                        false
-                    } else {
-                        let skip = self.null_uav && skip_null_uav_dispatches();
-                        if skip {
-                            null_uav_dropped(&p.name);
-                        }
-                        !skip
-                    }
+                    self.bind(list, p, true) && !drop_if_null_uav(self.null_uav, &p.name)
                 }
                 _ => false,
             },

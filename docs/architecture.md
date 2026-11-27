@@ -81,6 +81,10 @@ another slot, so the loader redirects those loads (`victory-loader::tls`).
 `victory census` shows this classification without running anything (it
 does not map title DLLs; `victory run` without `--execute` does).
 
+On Series S, FidelityFX / FSR is an HLE 1:1 passthrough by default so
+RDNA2 hosts (e.g. RX 6600) keep a coloured scene plane instead of a black
+upscaler output; see [fsr-passthrough-amd.md](fsr-passthrough-amd.md).
+
 ## Shaders
 
 `victory_shader::ir::build` turns a native program into SSA, one

@@ -148,7 +148,8 @@ The first launch after a build translates every shader and builds about
   `amd_fidelityfx_*` is an HLE 1:1 passthrough (dummy context, native
   resolution queries, colour→output copy on dispatch; `VICTORY_FSR=1`
   loads the title DLLs). ACCC upscaler pipelines are refused unless
-  `VICTORY_ACCC=1`.
+  `VICTORY_ACCC=1`. Full write-up:
+  [docs/fsr-passthrough-amd.md](docs/fsr-passthrough-amd.md).
 - With the in-game phone out the world is unlit (see the table).
 - The per-draw descriptor slots are few for the heaviest places: when they
   run out, some draws of a frame are dropped.

@@ -404,9 +404,15 @@ impl Shader {
         props: (u32, u32),
     ) -> V {
         // An index past the heap is a fault that stops the host GPU.
-        let index = if !sampler && super::limits_indices() {
-            let last = self.m.i32(super::OWN_SLOTS - 1);
+        // View heaps: OWN_SLOTS. Sampler heaps: D3D12 portable max (2048).
+        let index = if super::limits_indices() {
+            let last = self.m.i32(if sampler {
+                2048 - 1
+            } else {
+                super::OWN_SLOTS - 1
+            });
             let i32t = self.t.i32;
+            // DXIL UMin (opcode 40): unsigned clamp of a possibly wild index.
             self.op(block, "binary.i32", Attr::ReadNone, i32t, 40, &[index, last])
         } else {
             index

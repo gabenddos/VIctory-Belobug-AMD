@@ -6822,12 +6822,11 @@ impl<'a> Lower<'a> {
                     }
                     (RootType::Descriptor, Some(ResourceType::Srv), 11) => {
                         let h = self.s.root_srv_handle(rp.slot);
-                        // A draw with wild vertex numbers must not read past
-                        // the memory behind the view (a page fault).
-                        if super::limits_indices()
-                            && (self.s.threads.is_none() || self.s.mesh.is_some())
-                            && !self.s.limits.iter().any(|l| l.0 == h)
-                        {
+                        // Wild offsets through a root SRV page-fault the host
+                        // GPU (0x887A0006). Draws/mesh already clamped; compute
+                        // did not — AMD RX 6600 TDR bisect run-20261127-035328
+                        // faulted ~1 GiB past a small root buffer after compute EI.
+                        if super::limits_indices() && !self.s.limits.iter().any(|l| l.0 == h) {
                             let nth = 1 + self.s.limits.len() as u32;
                             let limit = self.host_data(nth, RootType::LIMIT, rp.slot.into());
                             self.s.limits.push((h, limit));

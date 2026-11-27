@@ -3,7 +3,8 @@
 Session notes from diagnosing GPU Timeout Detection and Recovery (TDR) on
 Victory + GTA VI Xbox Series (`1.0.2.1`) running on an AMD RX 6600 under Windows.
 Goal evolved from “black world / FSR” toward **isolating which GPU work hangs**
-before/during the prison intro.
+before/during the prison intro. The FSR black-scene bypass (separate from
+TDR) is documented in [fsr-passthrough-amd.md](fsr-passthrough-amd.md).
 
 This is a **diagnosis log**, not a fix. No code patch landed from this bisect.
 
@@ -293,8 +294,25 @@ as **spotlights for code**, not a quarantine list to enlarge.
 ### Patches landed
 
 1. Clamp zero-fill + EI without title count buffer (`indirect.rs` / `draw.rs`).
-2. **Null-UAV mesh skip** — same default as compute: mesh draws/EI that would
-   write a null UAV are dropped (`VICTORY_NULL_UAV_DISPATCH=1` to force-run).
+2. **Null-UAV drop** for compute, mesh, **and** DRAW/INDEXED (same AMD hang
+   class; `VICTORY_NULL_UAV_DISPATCH=1` to force-run).
+3. `run-tdr.ps1` defaults `-LoopLimit 65536` (was unset → 2^20) and prints only
+   `Last log:` (bisect paste prompts removed).
+
+### Fingerprint shift (2026-11-27)
+
+- Pre null-UAV-mesh: recent ops dominated by **mesh EI kind 10**.
+- After: still `0x887A0007`, recent ops dominated by **DRAW EI kind 0**
+  (vertex `25eb`/`1d7b`/`72c7` + many PS) — those three VS hashes sit in
+  `.pool` from earlier peels; do **not** re-peel them.
+- With `-LoopLimit 65536`: ~3.5 min then **CPU AV in `amdxc64.dll`** during
+  PSO create (not TDR; no `victory-gpu-removed.log`). VEH only caught null-page
+  AVs; broadened to any AV while `Making` a pipeline → `crashed.txt` quarantine.
+- Next run (~3 min): **page fault `0x887A0006`** at a VA ~1 GiB past a small
+  title buffer; DRED “op 46” is `BEGIN_COMMAND_LIST` (queued lists never
+  started — not the faulting op). Recent ops: compute EI then mesh EI.
+  Root-SRV byte limits now apply to **compute** too (were draw/mesh only);
+  sampler heap indices clamped like views.
 
 ### Repro after rebuild (no new hashes)
 
@@ -302,8 +320,6 @@ as **spotlights for code**, not a quarantine list to enlarge.
 cargo build --profile diag -p victory --features diagnostics
 .\scripts\run-tdr.ps1
 ```
-
-Optional: `.\scripts\run-tdr.ps1 -LoopLimit 4096` if still TDR (spin/loop hypothesis).
 
 Relevant crates: `crates/victory-gpu` (`draw.rs`, `indirect.rs`),
 `crates/victory-shader` (DXIL emit / `LOOP_LIMIT` / barriers).
@@ -336,7 +352,7 @@ became `"compute mesh"`. Victory logged `unknown token` and **did not skip mesh*
 so TDR trails still showed mesh/`ba8d`/`b375`. Fixed: `-Kinds` is `string[]`, joined
 with commas into `VICTORY_SKIP_KINDS`. Banner must show `Kinds: compute,mesh` (comma).
 
-Paste prompts printed by `run-tdr.ps1` after each run; prefer attaching both `run-*.log` and `victory-gpu-removed.log` when present.
+`run-tdr.ps1` prints `Last log:` only; attach that path (and `victory-gpu-removed.log` when present).
 
 ## Timeline (condensed)
 

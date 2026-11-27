@@ -336,15 +336,21 @@ unsafe extern "system" fn compiler_crashed(
     let record = unsafe { &*(*info).ExceptionRecord };
     let name = MAKING.try_with(|m| m.try_borrow().map(|m| m.clone()).unwrap_or_default());
     let name = name.unwrap_or_default();
-    // Only reads or writes of the first pages: our own guards' faults are
-    // elsewhere.
-    if record.ExceptionCode != ACCESS_VIOLATION
-        || name.is_empty()
-        || record.ExceptionInformation[1] >= 0x10000
-    {
+    // While this thread is inside Create*PipelineState / Load*Pipeline, any
+    // AV is treated as a driver-compiler crash. AMD's amdxc64 often faults on
+    // a wild high address (not only the null page); restricting to
+    // ExceptionInformation[1] < 0x10000 let those kill the process
+    // (run-20261127-034528, read 0x12d703d7ae78). Title guard / safe_copy
+    // faults do not happen on this path.
+    if record.ExceptionCode != ACCESS_VIOLATION || name.is_empty() {
         return 0; // not ours
     }
-    tracing::error!(name, "the driver's compiler crashed making a pipeline: it is left out");
+    let at = record.ExceptionInformation[1];
+    tracing::error!(
+        name,
+        at,
+        "the driver's compiler crashed making a pipeline: it is left out"
+    );
     note_crashed(&name);
     endless(&name, false);
     // SAFETY: a plain call.

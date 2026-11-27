@@ -1725,15 +1725,26 @@ impl Host {
                 node = p.pNext;
             }
             text.push_str(&format!("; breadcrumbs (done/count, list) {progress:?}"));
+            // Lists stuck at BEGIN_COMMAND_LIST (op 46) never started: the GPU
+            // died in an earlier list. Count them; expand only lists that ran.
+            let mut queued_unstarted = 0u32;
             let mut plain = crumbs.pHeadAutoBreadcrumbNode;
             while let Some(p) = plain.as_ref() {
                 let done = p.pLastBreadcrumbValue.as_ref().copied().unwrap_or(0);
                 if done < p.BreadcrumbCount && !p.pCommandHistory.is_null() {
                     let history =
                         std::slice::from_raw_parts(p.pCommandHistory, p.BreadcrumbCount as usize);
+                    let op = history[done as usize];
+                    // Never started: not the faulting command.
+                    if done == 0 && op == D3D12_AUTO_BREADCRUMB_OP_BEGIN_COMMAND_LIST {
+                        queued_unstarted += 1;
+                        plain = p.pNext;
+                        continue;
+                    }
                     text.push_str(&format!(
-                        "; a list stopped at command {done} of {} (op {})",
-                        p.BreadcrumbCount, history[done as usize].0
+                        "; a list stopped at command {done} of {} ({})",
+                        p.BreadcrumbCount,
+                        breadcrumb_op_name(op)
                     ));
                     let list = p.pCommandList.as_ref().map(|l| l.as_raw());
                     let run = runs.iter().find(|r| Some(r.list.as_raw()) == list);
@@ -1764,6 +1775,11 @@ impl Host {
                     }
                 }
                 plain = p.pNext;
+            }
+            if queued_unstarted > 0 {
+                text.push_str(&format!(
+                    "; {queued_unstarted} lists never started (BEGIN_COMMAND_LIST)"
+                ));
             }
         }
         text
@@ -4230,6 +4246,24 @@ fn fault_in(va: u64, (start, bytes): (u64, u64)) -> String {
     } else {
         format!(" (fault {:#x} past its source's end)", va - end)
     }
+}
+
+/// DRED auto-breadcrumb op as a short name (numeric alone is easy to misread:
+/// op 46 is BEGIN_COMMAND_LIST, not ExecuteIndirect).
+fn breadcrumb_op_name(op: D3D12_AUTO_BREADCRUMB_OP) -> String {
+    let name = match op {
+        D3D12_AUTO_BREADCRUMB_OP_SETMARKER => "SETMARKER",
+        D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED => "DRAWINSTANCED",
+        D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED => "DRAWINDEXEDINSTANCED",
+        D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT => "EXECUTEINDIRECT",
+        D3D12_AUTO_BREADCRUMB_OP_DISPATCH => "DISPATCH",
+        D3D12_AUTO_BREADCRUMB_OP_DISPATCHMESH => "DISPATCHMESH",
+        D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER => "RESOURCEBARRIER",
+        D3D12_AUTO_BREADCRUMB_OP_BEGIN_COMMAND_LIST => "BEGIN_COMMAND_LIST",
+        D3D12_AUTO_BREADCRUMB_OP_BARRIER => "BARRIER",
+        _ => return format!("op {}", op.0),
+    };
+    format!("{name} ({})", op.0)
 }
 
 /// The commands that may have been running where a list stopped at
