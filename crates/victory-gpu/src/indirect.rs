@@ -44,8 +44,12 @@ RWByteAddressBuffer dst_args : register(u0);
 // records run empty.
 RWByteAddressBuffer budget : register(u1);
 static const uint BUDGET = 1u << 27;
-// Groups of one dispatch; more run empty.
-static const uint GROUPS = 1u << 20;
+// Groups of one dispatch; more are capped. Match MESH_GROUPS: 2^16 still
+// hung AMD with LOOP_LIMIT 1024 past the cutscene (run-20261127-044203,
+// recent ops led with compute EI kind 2).
+static const uint GROUPS = 4096u;
+// Mesh ThreadGroupCountX ceiling (console is 1D); same hang class.
+static const uint MESH_GROUPS = 4096u;
 [RootSignature(RS)]
 [numthreads(64, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
@@ -83,16 +87,16 @@ void main(uint3 id : SV_DispatchThreadID) {
         draw_counts = uint2(count, instances);
     } else if (kind == 2) {
         uint3 g = min(src_args.Load3(src_at), uint3(65535u, 65535u, 65535u));
-        // x * y fits 32 bits; the whole count may not.
+        // Cap total groups (do not empty): a 1D slice of GROUPS still runs.
         if (g.z != 0 && g.x * g.y > GROUPS / g.z) {
-            g = uint3(0, 0, 0);
+            g = uint3(GROUPS, 1u, 1u);
         }
         cost = g.x * g.y * g.z * 64u;
         groups = g;
     } else {
         // Mesh dispatches: the console's are one-dimensional.
         uint3 g = src_args.Load3(src_at);
-        g = uint3(min(g.x, 65535u), min(g.y, 1u), min(g.z, 1u));
+        g = uint3(min(g.x, MESH_GROUPS), min(g.y, 1u), min(g.z, 1u));
         cost = g.x * g.y * g.z * 128u;
         groups = g;
     }
@@ -809,15 +813,14 @@ void main() {
             1,
             [5, 1, 1, 0x7777_8888, 0x9999_AAAA, 0xBBBB_CCCC],
         );
-        // Record 2 exceeds 65,535 in X -> clamped to (65535, 1, 1).
+        // Record 2 exceeds GROUPS in X -> capped to (GROUPS, 1, 1).
         write_record(
             &mut initial_src,
             2,
             [100_000, 1, 1, 0xDDDD_EEEE, 0xFFFF_0001, 0x0123_4567],
         );
         for slot in 3..MAX as usize {
-            // Each garbage slot would clamp to 65535 * 16 * 1 = 1,048,560 groups
-            // (`cost = 67,107,840 ~= BUDGET / 2`), exhausting `BUDGET` immediately!
+            // Each garbage slot would cap to GROUPS (product over budget).
             write_record(
                 &mut initial_src,
                 slot,
@@ -932,9 +935,9 @@ void main() {
             (hits, spent, after_src, after_count, words)
         };
 
-        // Call #1: (3*2*1) + (5*1*1) + (65535*1*1) = 65,546 groups.
+        // Call #1: (3*2*1) + (5*1*1) + (GROUPS*1*1) = 4,107 groups.
         // Call #2: (3*2*1) + (5*1*1) = 11 groups.
-        let expected_groups = (6 + 5 + 65_535) + (6 + 5);
+        let expected_groups = (6 + 5 + 4096) + (6 + 5);
         assert_eq!(
             hits, expected_groups,
             "valid indirect dispatches must all execute"
@@ -964,7 +967,7 @@ void main() {
         );
         assert_eq!(
             &clamped_words[12..18],
-            &[65_535, 1, 1, 0xDDDD_EEEE, 0xFFFF_0001, 0x0123_4567]
+            &[4096, 1, 1, 0xDDDD_EEEE, 0xFFFF_0001, 0x0123_4567]
         );
         // Inactive slot 3 was never copied from `src_args`.
         assert_ne!(clamped_words[21], 0xDEAD_BEEF);

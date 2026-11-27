@@ -296,14 +296,16 @@ as **spotlights for code**, not a quarantine list to enlarge.
 1. Clamp zero-fill + EI without title count buffer (`indirect.rs` / `draw.rs`).
 2. **Null-UAV drop** for compute, mesh, **and** DRAW/INDEXED (same AMD hang
    class; `VICTORY_NULL_UAV_DISPATCH=1` to force-run).
-3. `run-tdr.ps1` defaults `-LoopLimit 4096` (was 65536; still hung) and prints
-   only `Last log:` (bisect paste prompts removed).
+3. `run-tdr.ps1` defaults `-LoopLimit 1024` (4096 still hung with mesh +
+   `dispatch 4096`) and prints only `Last log:`.
 4. Dispatch / clamp DRED markers sit **immediately before** `Dispatch` (root
    constants between SetMarker and Dispatch made hung ops look unmarked).
 5. `descriptor::host::mirror`: failed UAV create → `None` on for_draw (was
    `Some` + null descriptor; null-UAV drop never armed).
 6. Dynamic tables: failed `make_at` arms `null_uav`; cache hits re-check
    `slot_live` (`bind` clears the flag each draw — run-042156 compute EI).
+7. Clamp `GROUPS` / mesh / direct dispatch all ≤4096 (044203: compute EI still
+   allowed 2^16 after mesh was capped — hung past cutscene).
 
 ### Fingerprint shift (2026-11-27)
 
@@ -330,6 +332,16 @@ as **spotlights for code**, not a quarantine list to enlarge.
   recent ops **compute EI kind 2** (many hashes). Dynamic-table `make_at`
   failures + cache hits after `null_uav = false` at bind left null UAVs
   running. Fixed in `draw.rs` / `make_at` → bool + `slot_live`.
+- Next: **256 null-UAV drops** (cap), then `0x887A0007` ~3 min, recent ops
+  **mesh EI kind 10** + `dispatch 4096x1x1`. Group ceilings + LoopLimit 1024.
+- Next: **no GPU removal** — CPU `0xC0000005` in `CreateFileW` /
+  `ntdll` reading a guest path at `0x159f5ff5000` (no access). `files::wide`
+  now VirtualQuery-copies the path and always owns the buffer for the host.
+- Next: past first cutscene (~frame 3122), then **`0x887A0007`**, empty
+  breadcrumbs; recent ops compute `3ae51…` + EI kind 2 + DRAW EI flood.
+  Compute clamp `GROUPS` was still **2^16** while mesh was 4096 — aligned
+  both (and direct `DISPATCH_GROUPS`) to **4096**; over-budget EI caps to
+  `(4096,1,1)` instead of emptying.
 
 ### Repro after rebuild (no new hashes)
 

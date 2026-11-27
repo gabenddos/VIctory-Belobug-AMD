@@ -12,6 +12,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::ffi::{CStr, c_char, c_void};
+use std::mem::size_of_val;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -181,8 +182,10 @@ pub(crate) fn translate(path: &[u16]) -> Option<Vec<u16>> {
     Some(out)
 }
 
-/// A title's wide path: the host path when it is on a virtual drive, else
-/// the title's own pointer.
+/// A title's wide path: always a host-owned buffer when the guest string was
+/// readable (translated virtual-drive path, or a copy of the title's path).
+/// Unreadable guest pointers must not be handed to `CreateFileW` — that AVs
+/// in ntdll/KERNELBASE (RX 6600 run-20261127-043410, read 0x159f5ff5000).
 struct Wide(*const u16, Option<Vec<u16>>);
 
 impl Wide {
@@ -191,18 +194,68 @@ impl Wide {
     }
 }
 
+/// Copies a guest NUL-terminated UTF-16 path into host memory, stopping at
+/// the first unreadable page. `None` if the pointer is bad or has no NUL
+/// within [`MAX_PATH_CHARS`].
+fn copy_guest_wstr(path: *const u16) -> Option<Vec<u16>> {
+    use windows_sys::Win32::System::Memory::{
+        MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQuery,
+    };
+    const MAX_PATH_CHARS: usize = 32_768;
+    let mut out = Vec::new();
+    for i in 0..MAX_PATH_CHARS {
+        let at = path.wrapping_add(i) as usize;
+        // SAFETY: VirtualQuery only inspects the address.
+        let mut info = unsafe { std::mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
+        let ok = unsafe { VirtualQuery(at as *const _, &mut info, size_of_val(&info)) };
+        if ok == 0
+            || info.State != MEM_COMMIT
+            || info.Protect & (PAGE_NOACCESS | PAGE_GUARD) != 0
+        {
+            return None;
+        }
+        // PAGE_READONLY / READWRITE / WRITECOPY / EXECUTE_READ* — anything
+        // without a read bit is not a path string we can scan.
+        let readable = matches!(
+            info.Protect & 0xff,
+            0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80
+        );
+        if !readable {
+            return None;
+        }
+        // SAFETY: this wchar lies in a committed readable page.
+        let c = unsafe { *path.add(i) };
+        if c == 0 {
+            return Some(out);
+        }
+        out.push(c);
+    }
+    None
+}
+
 fn wide(path: *const u16) -> Wide {
     if path.is_null() {
         return Wide(path, None);
     }
-    // SAFETY: the title passes a NUL-terminated path.
-    let path_slice = unsafe {
-        let len = (0..).take_while(|&i| *path.add(i) != 0).count();
-        std::slice::from_raw_parts(path, len)
+    let Some(chars) = copy_guest_wstr(path) else {
+        // Empty path → CreateFile fails with a Win32 error instead of AV.
+        warn_bad_path_once();
+        return Wide(path, Some(vec![0]));
     };
-    let host = translate(path_slice);
-    trace(path_slice, host.as_deref());
-    Wide(path, host)
+    let host = translate(&chars).unwrap_or_else(|| {
+        let mut v = chars.clone();
+        v.push(0);
+        v
+    });
+    trace(&chars, Some(host.as_slice()));
+    Wide(path, Some(host))
+}
+
+fn warn_bad_path_once() {
+    static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !SEEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!("title path not readable; CreateFile refused");
+    }
 }
 
 /// Every title path at debug level, with the host path if rewritten.
@@ -214,19 +267,53 @@ fn trace(path: &[u16], host: Option<&[u16]>) {
     );
 }
 
+/// As [`copy_guest_wstr`], for a narrow (ANSI) guest path.
+fn copy_guest_cstr(path: *const c_char) -> Option<Vec<u8>> {
+    use windows_sys::Win32::System::Memory::{
+        MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQuery,
+    };
+    const MAX: usize = 32_768;
+    let mut out = Vec::new();
+    for i in 0..MAX {
+        let at = path.wrapping_add(i) as usize;
+        // SAFETY: VirtualQuery only.
+        let mut info = unsafe { std::mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
+        let ok = unsafe { VirtualQuery(at as *const _, &mut info, size_of_val(&info)) };
+        if ok == 0
+            || info.State != MEM_COMMIT
+            || info.Protect & (PAGE_NOACCESS | PAGE_GUARD) != 0
+        {
+            return None;
+        }
+        let readable = matches!(
+            info.Protect & 0xff,
+            0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80
+        );
+        if !readable {
+            return None;
+        }
+        // SAFETY: committed readable page.
+        let c = unsafe { *path.add(i) } as u8;
+        if c == 0 {
+            return Some(out);
+        }
+        out.push(c);
+    }
+    None
+}
+
 /// A narrow path (ANSI code page, as the host decodes it) on a virtual
 /// drive, as a wide host path.
 fn narrow(path: *const c_char) -> Option<Vec<u16>> {
     if path.is_null() {
         return None;
     }
-    // SAFETY: the title passes a NUL-terminated path.
-    let bytes = unsafe { CStr::from_ptr(path) }.to_bytes();
+    let bytes = copy_guest_cstr(path)?;
     // The drive part is ASCII in every code page; decode only candidates.
-    match bytes.strip_prefix(br"\\?\").unwrap_or(bytes) {
+    match bytes.strip_prefix(br"\\?\").unwrap_or(bytes.as_slice()) {
         [letter, b':', ..] if letter.is_ascii_alphabetic() => {}
         _ => {
-            tracing::debug!(path = %String::from_utf8_lossy(bytes), "title path");
+            tracing::debug!(path = %String::from_utf8_lossy(&bytes), "title path");
             return None;
         }
     }
