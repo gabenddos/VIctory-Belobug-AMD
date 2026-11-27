@@ -44,12 +44,12 @@ RWByteAddressBuffer dst_args : register(u0);
 // records run empty.
 RWByteAddressBuffer budget : register(u1);
 static const uint BUDGET = 1u << 27;
-// Groups of one dispatch; more are capped. 4096 still hung AMD when a list
-// packed many mid-size 3D dispatches (run-20261127-045345: 20x12x17,
-// 8x8x40, 16x16x6, … — pure compute trail, empty breadcrumbs).
-static const uint GROUPS = 1024u;
+// Groups of one dispatch; more are capped. Direct lists also charge a
+// cumulative budget (HostList::charge_groups); EI records use this ceiling
+// (run-20261127-045903: ten direct 5x5x33 under 1024 still TDRd).
+static const uint GROUPS = 512u;
 // Mesh ThreadGroupCountX ceiling (console is 1D); same hang class.
-static const uint MESH_GROUPS = 1024u;
+static const uint MESH_GROUPS = 512u;
 [RootSignature(RS)]
 [numthreads(64, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
@@ -935,9 +935,9 @@ void main() {
             (hits, spent, after_src, after_count, words)
         };
 
-        // Call #1: (3*2*1) + (5*1*1) + (GROUPS*1*1) = 1,035 groups.
+        // Call #1: (3*2*1) + (5*1*1) + (GROUPS*1*1) = 523 groups.
         // Call #2: (3*2*1) + (5*1*1) = 11 groups.
-        let expected_groups = (6 + 5 + 1024) + (6 + 5);
+        let expected_groups = (6 + 5 + 512) + (6 + 5);
         assert_eq!(
             hits, expected_groups,
             "valid indirect dispatches must all execute"
@@ -967,7 +967,7 @@ void main() {
         );
         assert_eq!(
             &clamped_words[12..18],
-            &[1024, 1, 1, 0xDDDD_EEEE, 0xFFFF_0001, 0x0123_4567]
+            &[512, 1, 1, 0xDDDD_EEEE, 0xFFFF_0001, 0x0123_4567]
         );
         // Inactive slot 3 was never copied from `src_args`.
         assert_ne!(clamped_words[21], 0xDEAD_BEEF);

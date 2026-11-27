@@ -1080,9 +1080,10 @@ impl State {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        // Align with clamp GROUPS (1024): 4096 still hung when one list packed
-        // many mid-size 3D dispatches (run-20261127-045345 pure compute trail).
-        const DISPATCH_GROUPS: u64 = 1024;
+        // Align with clamp GROUPS (512). List also has a cumulative budget
+        // (`HostList::charge_groups`) — per-dispatch alone still hung when
+        // ten `5x5x33` packed one list (run-20261127-045903).
+        const DISPATCH_GROUPS: u64 = 512;
         let groups = u64::from(x) * u64::from(y.max(1)) * u64::from(z.max(1));
         if start.is_none() && groups > DISPATCH_GROUPS {
             once!(x, y, z, "a dispatch past the host's group budget dropped");
@@ -1095,6 +1096,11 @@ impl State {
             return;
         }
         if drop_if_null_uav(self.null_uav, &p.name) {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if !list.charge_groups(groups) {
+            once!(x, y, z, "a dispatch past the list's group budget dropped");
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -1264,7 +1270,7 @@ impl State {
             return;
         }
         // Match indirect mesh clamp (MESH_GROUPS).
-        const MESH_GROUPS: u32 = 1024;
+        const MESH_GROUPS: u32 = 512;
         if x > MESH_GROUPS {
             once!(x, "a mesh dispatch past the host's group limit dropped");
             DROPPED.fetch_add(1, Ordering::Relaxed);
@@ -1277,6 +1283,7 @@ impl State {
             && !null_pipe
                 .as_ref()
                 .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name))
+            && list.charge_groups(u64::from(x))
             && match list.list.cast::<ID3D12GraphicsCommandList6>() {
                 Ok(l6) => {
                     #[cfg(feature = "diagnostics")]

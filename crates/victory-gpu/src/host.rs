@@ -707,6 +707,10 @@ pub(crate) struct HostList {
     /// Dispatches and buffer copies recorded since the reset: what may have
     /// written indirect arguments (`crate::indirect` clamps hoisted before).
     writes: std::sync::atomic::AtomicU64,
+    /// Direct compute/mesh groups charged since reset. Per-dispatch caps still
+    /// allow a packed list of mid-size 3D dispatches to fill a TDR window
+    /// (AMD RX 6600; run-20261127-045903: ten `5x5x33` under the 1024 cap).
+    groups: std::sync::atomic::AtomicU64,
     /// Buffers for clamped indirect arguments when this list holds the
     /// clamps of the list after it (`clamp_room`).
     clamp_chunks: Mutex<ClampChunks>,
@@ -1126,6 +1130,7 @@ impl Host {
                 kept: Mutex::default(),
                 work: Mutex::default(),
                 writes: Default::default(),
+                groups: std::sync::atomic::AtomicU64::new(0),
                 clamp_chunks: Mutex::default(),
                 pipelines: Mutex::default(),
                 queries: Mutex::default(),
@@ -2034,6 +2039,7 @@ impl HostList {
         *self.deferred() = Deferred::default();
         *self.work.lock().unwrap_or_else(|e| e.into_inner()) = 0;
         self.writes.store(0, Ordering::Relaxed);
+        self.groups.store(0, Ordering::Relaxed);
         {
             let mut chunks = self.clamp_chunks.lock().unwrap_or_else(|e| e.into_inner());
             chunks.used = 0;
@@ -2499,6 +2505,29 @@ impl HostList {
     /// Counts a draw, dispatch, clear or copy.
     pub(crate) fn count_work(&self) {
         *self.work.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    }
+
+    /// Charges `groups` against this list's direct compute/mesh budget.
+    /// Returns false when the list is already at the cap (caller drops the work).
+    pub(crate) fn charge_groups(&self, groups: u64) -> bool {
+        // ~2× the per-dispatch ceiling: stops packing ten mid-size 3D
+        // dispatches into one TDR window while still allowing a couple.
+        const LIST_GROUPS: u64 = 2048;
+        let mut prev = self.groups.load(Ordering::Relaxed);
+        loop {
+            if prev >= LIST_GROUPS || prev.saturating_add(groups) > LIST_GROUPS {
+                return false;
+            }
+            match self.groups.compare_exchange_weak(
+                prev,
+                prev + groups,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(v) => prev = v,
+            }
+        }
     }
 
     /// Does the list's writes that come before its first wait not met, if no

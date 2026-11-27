@@ -304,8 +304,9 @@ as **spotlights for code**, not a quarantine list to enlarge.
    `Some` + null descriptor; null-UAV drop never armed).
 6. Dynamic tables: failed `make_at` arms `null_uav`; cache hits re-check
    `slot_live` (`bind` clears the flag each draw — run-042156 compute EI).
-7. Clamp `GROUPS` / mesh / direct dispatch all ≤1024; LoopLimit default 256
-   (045345: 4096+1024 still hung on a packed pure-compute list).
+7. Clamp `GROUPS` / mesh / direct ≤512; per-list direct group budget 2048;
+   LoopLimit default 256 (045903: ten `5x5x33` under per-dispatch cap still
+   hung — packing, not one huge dispatch).
 
 ### Fingerprint shift (2026-11-27)
 
@@ -346,6 +347,9 @@ as **spotlights for code**, not a quarantine list to enlarge.
   trail (`8x8x40`, `20x12x17`, many EI kind 2). Cap alone drops `128²` but
   mid-size 3D under 4096 still pack a TDR list. Caps → **1024**, LoopLimit →
   **256**.
+- Next: ~frame 18925, same hang; trail has **ten** `dispatch 5x5x33` (825
+  groups each) plus draws. Per-dispatch cap is the wrong lever for packing →
+  `HostList::charge_groups` (2048/list) + caps **512**.
 
 ### Repro after rebuild (no new hashes)
 
