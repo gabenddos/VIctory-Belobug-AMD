@@ -350,6 +350,9 @@ as **spotlights for code**, not a quarantine list to enlarge.
 - Next: ~frame 18925, same hang; trail has **ten** `dispatch 5x5x33` (825
   groups each) plus draws. Per-dispatch cap is the wrong lever for packing →
   `HostList::charge_groups` (2048/list) + caps **512**.
+- Next: list budget fired for direct compute, then **`0x887A0007`** on a
+  pure **mesh EI kind 10** flood (`7972997d…` ×30). EI mesh/dispatch now
+  charges the same list budget (worst-case `max×512`).
 
 ### Repro after rebuild (no new hashes)
 

@@ -2039,6 +2039,21 @@ impl State {
             }
             return false;
         }
+        // Worst-case groups for the list budget (clamp ceiling × max). Direct
+        // compute was capped but mesh EI still packed 30× kind 10 into one
+        // TDR window (run-20261127-050950, mesh 7972997d15fd9e69).
+        const EI_GROUPS: u64 = 512;
+        if matches!(kind, MESH | DISPATCH)
+            && !list.charge_groups(u64::from(max.max(1)) * EI_GROUPS)
+        {
+            if inline {
+                crate::indirect::done(list, &bounded);
+            }
+            once!(kind, max, "an indirect dispatch past the list's group budget dropped");
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+            why("list group budget");
+            return false;
+        }
         #[cfg(feature = "diagnostics")]
         crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || {
             self.op_text(
