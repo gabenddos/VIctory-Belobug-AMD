@@ -1638,11 +1638,16 @@ impl State {
         }
         let rects = self.topology == RECTANGLES && !self.draws_rectangles();
         let pipe = crate::pipeline::host_pipeline(self.pipeline as This);
-        let ran = self.prepare(list, false)
+        // Align with EI draw clamp (1<<16 verts, ~1<<20 vert×inst).
+        const MAX_VERT_INST: u64 = 1 << 20;
+        let vert_inst = u64::from(vertices) * u64::from(instances.max(1));
+        let ran = vert_inst <= MAX_VERT_INST
+            && self.prepare(list, false)
             && (!rects || self.rectangles(list, vertices, first))
             && !pipe
                 .as_ref()
-                .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name));
+                .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name))
+            && list.charge_groups(vert_inst.div_ceil(1024).max(1));
         if ran {
             // Rectangles were expanded into their own vertex buffers.
             let (count, from) = if rects {
@@ -1758,11 +1763,15 @@ impl State {
             once!("indexed rectangles not drawn");
         }
         let pipe = crate::pipeline::host_pipeline(self.pipeline as This);
+        const MAX_VERT_INST: u64 = 1 << 20;
+        let vert_inst = u64::from(indices) * u64::from(instances.max(1));
         let ran = !rects
+            && vert_inst <= MAX_VERT_INST
             && self.prepare(list, true)
             && !pipe
                 .as_ref()
-                .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name));
+                .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name))
+            && list.charge_groups(vert_inst.div_ceil(1024).max(1));
         if ran {
             #[cfg(feature = "diagnostics")]
             {
@@ -2042,17 +2051,18 @@ impl State {
             }
             return false;
         }
-        // Worst-case groups for the list budget (clamp ceiling × max). Direct
-        // compute was capped but mesh EI still packed 30× kind 10 into one
-        // TDR window (run-20261127-050950, mesh 7972997d15fd9e69).
-        const EI_GROUPS: u64 = 512;
-        if matches!(kind, MESH | DISPATCH)
-            && !list.charge_groups(u64::from(max.max(1)) * EI_GROUPS)
-        {
+        // Worst-case charge against the list budget. Mesh/compute EI used 512;
+        // DRAW EI floods (1d2c/72c7, run-20261127-051957) were uncharged.
+        let ei_cost = match kind {
+            MESH | DISPATCH => 512,
+            DRAW | INDEXED => 128,
+            _ => 0,
+        };
+        if ei_cost != 0 && !list.charge_groups(u64::from(max.max(1)) * ei_cost) {
             if inline {
                 crate::indirect::done(list, &bounded);
             }
-            once!(kind, max, "an indirect dispatch past the list's group budget dropped");
+            once!(kind, max, "an indirect draw/dispatch past the list's group budget dropped");
             DROPPED.fetch_add(1, Ordering::Relaxed);
             why("list group budget");
             return false;

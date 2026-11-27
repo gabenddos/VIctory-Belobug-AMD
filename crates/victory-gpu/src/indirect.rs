@@ -15,10 +15,9 @@
 //! run empty, saturating without 32-bit wraparound so a list of thousands of
 //! garbage records cannot run for seconds either.
 //!
-//! shortcut: the bounds (2^24 vertices, 2^26 vertex instances, 65,535
-//! groups per dimension and 2^20 per dispatch, one-dimensional mesh
-//! dispatches, the budget) cut legitimate work beyond them; raise them if
-//! the title needs more.
+//! shortcut: the bounds (2^16 vertices, 2^20 vertex instances, 512 groups
+//! per dispatch, one-dimensional mesh dispatches, the budget) cut
+//! legitimate work beyond them; raise them if the title needs more.
 
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
@@ -80,9 +79,10 @@ void main(uint3 id : SV_DispatchThreadID) {
     uint2 draw_counts = uint2(0, 0);
     uint3 groups = uint3(0, 0, 0);
     if (kind <= 1) {
-        // Draws: vertex or index count, then instances.
-        uint count = min(src_args.Load(src_at), 1u << 24);
-        uint instances = min(src_args.Load(src_at + 4), (1u << 26) / max(count, 1u));
+        // Draws: vertex or index count, then instances. 2^24 still hung AMD
+        // with LOOP_LIMIT 64 on a DRAW EI flood (run-20261127-051957: 1d2c/72c7).
+        uint count = min(src_args.Load(src_at), 1u << 16);
+        uint instances = min(src_args.Load(src_at + 4), (1u << 20) / max(count, 1u));
         cost = count * instances;
         draw_counts = uint2(count, instances);
     } else if (kind == 2) {
@@ -985,7 +985,8 @@ void main() {
         };
         const KIND_INDEXED: u32 = 1;
         const STRIDE: u32 = 24; // 5 indexed-draw words + 1 trailing custom word
-        const RECORDS: u32 = 128; // 2 waves of 64: old InterlockedAdd wrapped 2^32 at 64!
+        // Each record costs 1<<20 after clamp; 256 records → half kept, half zeroed.
+        const RECORDS: u32 = 256;
         const BUDGET_CAP: u32 = 1 << 27;
 
         let total_bytes = (STRIDE * RECORDS) as usize;
@@ -997,8 +998,8 @@ void main() {
         let mut initial_src = vec![0u8; total_bytes];
         for i in 0..RECORDS as usize {
             let words: [u32; 6] = [
-                u32::MAX,                    // IndexCount -> clamps to 1 << 24
-                u32::MAX,                    // InstanceCount -> clamps to 4 (cost = 1 << 26)
+                u32::MAX,                    // IndexCount -> clamps to 1 << 16
+                u32::MAX,                    // InstanceCount -> clamps to 16 (cost = 1 << 20)
                 1000 + i as u32,             // StartIndexLocation
                 (-200i32 + i as i32) as u32, // BaseVertexLocation
                 5000 + i as u32,             // StartInstanceLocation
@@ -1068,7 +1069,7 @@ void main() {
         let mut zeroed = 0usize;
         for i in 0..RECORDS as usize {
             let rec = &out_words[i * 6..(i + 1) * 6];
-            if rec[0] == (1 << 24) && rec[1] == 4 {
+            if rec[0] == (1 << 16) && rec[1] == 16 {
                 kept += 1;
             } else {
                 assert_eq!((rec[0], rec[1]), (0, 0), "excess draw must be zeroed");
@@ -1079,7 +1080,7 @@ void main() {
             assert_eq!(rec[4], 5000 + i as u32);
             assert_eq!(rec[5], 0xCAFE_0000 | (i as u32));
         }
-        assert_eq!((kept, zeroed), (2, (RECORDS as usize) - 2));
+        assert_eq!((kept, zeroed), (128, (RECORDS as usize) - 128));
     }
 
     /// Exercises `HostList::indirect_scratch`, `bound`, `done`, `Host::execute`,

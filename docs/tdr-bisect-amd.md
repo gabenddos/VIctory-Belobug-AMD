@@ -356,6 +356,10 @@ as **spotlights for code**, not a quarantine list to enlarge.
 - Next: budgets firing, but hang trail is **tiny direct mesh** (`ba8d`/
   `b375` `mesh 1`…, also `8c8f`/`87836f`). Null-UAV drop hit ba8d once
   then later draws ran. Mesh list charge ×128; list cap 1024; LoopLimit 64.
+- Next: mesh/compute budgets held; hang is **DRAW EI** flood (`1d2c`/`72c7`)
+  + heavy indexed. Title also `E_OUTOFMEMORY` breakpoint after remove.
+  Draw clamp 2^16/2^20; DRAW/INDEXED EI charge list budget (128); direct
+  draws charge vert×inst/1024.
 
 ### Repro after rebuild (no new hashes)
 
