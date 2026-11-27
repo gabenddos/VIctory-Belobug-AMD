@@ -1080,10 +1080,9 @@ impl State {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        // Align with clamp GROUPS (512). List also has a cumulative budget
-        // (`HostList::charge_groups`) — per-dispatch alone still hung when
-        // ten `5x5x33` packed one list (run-20261127-045903).
-        const DISPATCH_GROUPS: u64 = 512;
+        // Align with clamp GROUPS (128). Rotating small compute EI still hung
+        // at 512 (run-20261127-054447).
+        const DISPATCH_GROUPS: u64 = 128;
         let groups = u64::from(x) * u64::from(y.max(1)) * u64::from(z.max(1));
         if start.is_none() && groups > DISPATCH_GROUPS {
             once!(x, y, z, "a dispatch past the host's group budget dropped");
@@ -1099,10 +1098,8 @@ impl State {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        // Weight compute like a soft mip-chain tax: raw group counts let
-        // 20x12+10x6+5x3+3x2 of one shader pack under 1024 and still TDR
-        // (run-20261127-053841, compute 4edee813 / 04be1ad6).
-        if !list.charge_groups(groups.saturating_mul(4)) {
+        // ×8: mip-chains and packs of 2x2x10 under a 512 list budget.
+        if !list.charge_groups(groups.saturating_mul(8)) {
             once!(x, y, z, "a dispatch past the list's group budget dropped");
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
@@ -1273,7 +1270,7 @@ impl State {
             return;
         }
         // Match indirect mesh clamp (MESH_GROUPS).
-        const MESH_GROUPS: u32 = 512;
+        const MESH_GROUPS: u32 = 128;
         if x > MESH_GROUPS {
             once!(x, "a mesh dispatch past the host's group limit dropped");
             DROPPED.fetch_add(1, Ordering::Relaxed);
@@ -2054,11 +2051,10 @@ impl State {
             }
             return false;
         }
-        // Worst-case charge against the list budget. DRAW EI at 128 let eight
-        // 1d2c records fill one list and still TDR (run-20261127-053116).
+        // One heavy EI per list (DRAW/compute/mesh). Many kind-2 still packed
+        // at cost 512 (run-20261127-054447).
         let ei_cost = match kind {
-            MESH | DISPATCH => 512,
-            DRAW | INDEXED => 1024,
+            MESH | DISPATCH | DRAW | INDEXED => 1024,
             _ => 0,
         };
         if ei_cost != 0 && !list.charge_groups(u64::from(max.max(1)) * ei_cost) {

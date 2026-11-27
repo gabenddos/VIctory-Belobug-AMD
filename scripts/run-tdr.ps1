@@ -21,10 +21,10 @@ param(
     # Accepts -Hashes a,b,c (PowerShell array) or -Hashes "a,b,c" (one string).
     [string[]]$Hashes = @(),
     [string]$TextureMax = "128",
-    # VICTORY_SHADER_LOOP_LIMIT. Default 32 for AMD TDRs (64 still hung on
-    # compute mip-chains after DRAW quarantine — run-20261127-053841).
+    # VICTORY_SHADER_LOOP_LIMIT. Default 16 for AMD TDRs (32 still hung on
+    # rotating small compute EI — run-20261127-054447).
     # Pass -LoopLimit 1048576 to restore the translator default; -LoopLimit "" to leave unset.
-    [string]$LoopLimit = "32",
+    [string]$LoopLimit = "16",
     [string]$Console = "series-s",
     [string]$GameExe = "",
     [string]$VictoryExe = "",

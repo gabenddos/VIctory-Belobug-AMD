@@ -304,9 +304,8 @@ as **spotlights for code**, not a quarantine list to enlarge.
    `Some` + null descriptor; null-UAV drop never armed).
 6. Dynamic tables: failed `make_at` arms `null_uav`; cache hits re-check
    `slot_live` (`bind` clears the flag each draw — run-042156 compute EI).
-7. Clamp `GROUPS` / mesh / direct ≤512; per-list budget 1024 (mesh ×128);
-   LoopLimit default 64 (051357: ba8d/b375 `mesh 1` flood after budgets
-   worked on compute/EI).
+7. Clamp `GROUPS` / mesh / direct ≤128; per-list budget 512 (compute ×8,
+   mesh ×128); one EI per list; LoopLimit 16 (054447: rotating compute EI).
 
 ### Fingerprint shift (2026-11-27)
 
@@ -366,6 +365,9 @@ as **spotlights for code**, not a quarantine list to enlarge.
 - Next: DRAW quarantine on; hang is compute **mip-chain** `4edee813` /
   `04be1ad6` (20×12→3×2) plus mixed draws. Compute list charge ×4; quarantine
   those two CS hashes; LoopLimit 32.
+- Next: quarantines on; hang is **rotating** small compute EI / `2x2x10`
+  (many hashes, one 58KB CS) — not a peel. Caps → 128; list 512; compute ×8;
+  all EI cost 1024; LoopLimit 16.
 
 ### Repro after rebuild (no new hashes)
 
