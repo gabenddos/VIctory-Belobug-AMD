@@ -76,3 +76,11 @@
 *.swp
 Thumbs.db
 .DS_Store
+
+# Local TDR bisect artifacts (scripts/run-tdr.ps1)
+/run-*.log
+/victory-gpu-removed.log
+/tdr-skip-hashes.txt
+/tdr-skip-hashes.txt.pool
+/tdr-skip-hashes.txt.bisect-parent
+/tdr-skip-hashes.txt.*

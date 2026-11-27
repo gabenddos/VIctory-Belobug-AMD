@@ -250,6 +250,7 @@ pub(crate) fn fail(what: std::fmt::Arguments) -> ! {
         }
     }
     tracing::error!("{text}");
+    persist_gpu_removed(&text);
     match ON_FAILURE.get() {
         Some(report) => report(&text),
         None => std::process::abort(),
@@ -347,11 +348,20 @@ fn create() -> windows::core::Result<Host> {
         // faulting address), read when the device is removed.
         if dred_on() {
             let mut dred: Option<ID3D12DeviceRemovedExtendedDataSettings> = None;
-            if D3D12GetDebugInterface(&mut dred).is_ok()
-                && let Some(dred) = dred
-            {
-                dred.SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-                dred.SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            match D3D12GetDebugInterface(&mut dred) {
+                Ok(()) => {
+                    if let Some(dred) = dred {
+                        dred.SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                        dred.SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                        tracing::info!("D3D12 DRED breadcrumbs and page-fault tracking on");
+                    } else {
+                        tracing::warn!("D3D12 DRED interface was null");
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "no D3D12 DRED interface (install Windows Graphics Tools)"
+                ),
             }
         }
         let mut device: Option<ID3D12Device> = None;
@@ -4113,6 +4123,7 @@ fn last_notes(runs: &[&HostList]) -> String {
                 text.push_str(&format!("; list {i} of {}, of its {}: {n}", runs.len(), notes.len()));
             }
         }
+        text.push_str(&recent_gpu_ops_text());
         text
     }
     #[cfg(not(feature = "diagnostics"))]
@@ -4120,6 +4131,91 @@ fn last_notes(runs: &[&HostList]) -> String {
         let _ = runs;
         String::new()
     }
+}
+
+/// Ring of the last GPU ops we marked (diagnostics): DRED often names a
+/// hung list from an earlier submission (`None` in the current `runs`), so
+/// list-local markers never pair. This still names the recent pipelines.
+#[cfg(feature = "diagnostics")]
+const RECENT_GPU_OPS: usize = 32;
+
+#[cfg(feature = "diagnostics")]
+static RECENT_OPS: Mutex<std::collections::VecDeque<String>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+/// Records a GPU op about to run (diagnostics); dumped on device-removed.
+#[cfg(feature = "diagnostics")]
+pub(crate) fn note_recent_gpu_op(text: String) {
+    let mut q = RECENT_OPS.lock().unwrap_or_else(|e| e.into_inner());
+    if q.len() >= RECENT_GPU_OPS {
+        q.pop_front();
+    }
+    q.push_back(text);
+}
+
+#[cfg(feature = "diagnostics")]
+fn recent_gpu_ops_text() -> String {
+    let q = RECENT_OPS.lock().unwrap_or_else(|e| e.into_inner());
+    if q.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from("; recent GPU ops:");
+    for (i, op) in q.iter().enumerate() {
+        let short: String = op.chars().take(160).collect();
+        text.push_str(&format!(" [{i}] {short}"));
+    }
+    text
+}
+
+#[cfg(not(feature = "diagnostics"))]
+fn recent_gpu_ops_text() -> String {
+    String::new()
+}
+
+/// Writes the device-removed report to disk so a title abort cannot erase
+/// the console-only `recent GPU ops` line. Overwrites; a later `fail` may
+/// replace an earlier short dump with a fuller one.
+fn persist_gpu_removed(text: &str) {
+    let mut paths = vec![
+        std::path::PathBuf::from("victory-gpu-removed.log"),
+        std::env::temp_dir().join("victory-gpu-removed.log"),
+    ];
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.insert(0, cwd.join("victory-gpu-removed.log"));
+    }
+    for path in paths {
+        match std::fs::write(&path, text) {
+            Ok(()) => tracing::error!(path = %path.display(), "wrote GPU removal report"),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "could not write GPU removal report")
+            }
+        }
+    }
+}
+
+/// If `error` is device-removed/hung, dump DRED + recent ops to the log and
+/// to `victory-gpu-removed.log` (once). Safe to call from many threads.
+pub(crate) fn note_device_removed_error(error: &windows::core::Error) {
+    const DEVICE_REMOVED: u32 = 0x887A_0005;
+    const DEVICE_HUNG: u32 = 0x887A_0006;
+    const DEVICE_RESET: u32 = 0x887A_0007;
+    if !matches!(error.code().0 as u32, DEVICE_REMOVED | DEVICE_HUNG | DEVICE_RESET) {
+        return;
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let reason = host().map(|h| {
+            // SAFETY: a plain query.
+            unsafe { h.device.GetDeviceRemovedReason() }
+        });
+        let dred = host().map(|h| h.removal_data(&[])).unwrap_or_default();
+        let text = format!(
+            "host GPU device gone{dred}{}\nreason={reason:?}\ntrigger={error}",
+            recent_gpu_ops_text()
+        );
+        tracing::error!("{text}");
+        persist_gpu_removed(&text);
+    });
 }
 
 /// Where the faulting address `va` lies against a range `(start, bytes)` a
@@ -4481,14 +4577,13 @@ mod batch {   // Batch::texture_due lives here; `mod tests` is already taken at 
 /// The device is gone: why is logged, and the caller waits, so the thread
 /// that runs the submission can report it before the title fails.
 fn wait_if_removed(device: &ID3D12Device, error: &windows::core::Error) {
+    let _ = device;
     if error.code().0 as u32 != 0x887A_0005 {
         return;
     }
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // SAFETY: a plain query.
-        let reason = unsafe { device.GetDeviceRemovedReason() };
-        tracing::error!(?reason, layer = ?host().and_then(|h| h.log_messages()), "host GPU device gone");
-    });
+    // TDR often surfaces here first (Create*/Execute fails with
+    // DEVICE_REMOVED). Dump before sleeping so a title abort still leaves
+    // `victory-gpu-removed.log`.
+    note_device_removed_error(error);
     std::thread::sleep(std::time::Duration::from_secs(20));
 }

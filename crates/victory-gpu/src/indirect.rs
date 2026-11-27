@@ -53,9 +53,25 @@ void main(uint3 id : SV_DispatchThreadID) {
     if (has_count != 0) {
         eff_count = min(eff_count, count_buf.Load(count_offset));
     }
-    if (id.x >= eff_count) return;
     uint src_at = args_offset + id.x * stride;
     uint dst_at = id.x * stride;
+    // Inactive slots must be zeroed: ExecuteIndirect uses MaxCommandCount with
+    // no title count buffer (see draw.rs), so uninitialized scratch past
+    // eff_count was a hang class on AMD (garbage draws / mesh groups).
+    if (id.x >= eff_count) {
+        if (kind <= 1) {
+            dst_args.Store2(dst_at, uint2(0, 0));
+            for (uint off = 8; off < stride; off += 4) {
+                dst_args.Store(dst_at + off, 0);
+            }
+        } else {
+            dst_args.Store3(dst_at, uint3(0, 0, 0));
+            for (uint off = 12; off < stride; off += 4) {
+                dst_args.Store(dst_at + off, 0);
+            }
+        }
+        return;
+    }
     uint cost;
     uint2 draw_counts = uint2(0, 0);
     uint3 groups = uint3(0, 0, 0);

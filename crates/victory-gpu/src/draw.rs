@@ -180,7 +180,20 @@ fn null_uav_dropped(pipeline: &str) {
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     if seen.len() < 256 && !seen.iter().any(|s| s == pipeline) {
         seen.push(pipeline.to_owned());
-        tracing::warn!(pipeline, "a dispatch writing through a null unordered access view dropped");
+        tracing::warn!(
+            pipeline,
+            "a draw/dispatch writing through a null unordered access view dropped"
+        );
+    }
+}
+
+/// Drop work that would write through a null UAV (AMD hang class).
+fn drop_if_null_uav(null_uav: bool, pipeline: &str) -> bool {
+    if null_uav && skip_null_uav_dispatches() {
+        null_uav_dropped(pipeline);
+        true
+    } else {
+        false
     }
 }
 
@@ -1009,6 +1022,12 @@ impl State {
     // shortcut: y and z stay groups; such dispatches are one-dimensional.
     pub(crate) fn dispatch(&mut self, list: &HostList, x: u32, y: u32, z: u32, threads: bool) {
         #[cfg(feature = "diagnostics")]
+        if crate::pipeline::skip_kind("compute") {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::note_why("skipped kind compute".into());
+            return;
+        }
+        #[cfg(feature = "diagnostics")]
         if crate::pipeline::is_skipped(self.pipeline as This) {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             crate::pipeline::note_drop(self.pipeline as This);
@@ -1061,13 +1080,16 @@ impl State {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        if self.null_uav && skip_null_uav_dispatches() {
-            null_uav_dropped(&p.name);
+        if drop_if_null_uav(self.null_uav, &p.name) {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
         #[cfg(feature = "diagnostics")]
-        list.note_op(|| self.op_text(format!("dispatch {x}x{y}x{z}"), true, false));
+        {
+            let mark = self.op_text(format!("dispatch {x}x{y}x{z}"), true, false);
+            crate::host::note_recent_gpu_op(mark.clone());
+            list.note_op(|| mark);
+        }
         #[cfg(feature = "diagnostics")]
         crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || self.op_text(format!("dispatch {x}x{y}x{z}"), true, true));
         if let (Some((param, index, _)), Some(most)) = (limit, most) {
@@ -1211,18 +1233,36 @@ impl State {
     pub(crate) fn dispatch_mesh(&mut self, list: &HostList, x: u32) {
         #[cfg(feature = "diagnostics")]
         self.trace("mesh", x, 0);
+        #[cfg(feature = "diagnostics")]
+        if crate::pipeline::skip_kind("mesh") {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::note_why("skipped kind mesh".into());
+            return;
+        }
         if x > MAX_GROUPS {
             once!(x, "a mesh dispatch past the host's group limit dropped");
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
+        // Same hang class as compute: mesh that writes a null UAV can spin
+        // forever on AMD (RX 6600 TDR bisect; see skip_null_uav_dispatches).
+        let null_pipe = crate::pipeline::host_pipeline(self.pipeline as This);
         let ran = self.prepare_for(list, false, true)
+            && !null_pipe
+                .as_ref()
+                .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name))
             && match list.list.cast::<ID3D12GraphicsCommandList6>() {
                 Ok(l6) => {
                     #[cfg(feature = "diagnostics")]
-                    list.note_op(|| self.op_text(format!("mesh {x}"), false, false));
-        #[cfg(feature = "diagnostics")]
-        crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || self.op_text(format!("mesh {x}"), false, true));
+                    {
+                        let mark = self.op_text(format!("mesh {x}"), false, false);
+                        crate::host::note_recent_gpu_op(mark.clone());
+                        list.note_op(|| mark);
+                    }
+                    #[cfg(feature = "diagnostics")]
+                    crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || {
+                        self.op_text(format!("mesh {x}"), false, true)
+                    });
                     // SAFETY: an open list with everything set.
                     unsafe { l6.DispatchMesh(x, 1, 1) };
                     list.count_work();
@@ -1532,8 +1572,19 @@ impl State {
     ) {
         #[cfg(feature = "diagnostics")]
         self.trace("draw", vertices, first);
+        #[cfg(feature = "diagnostics")]
+        if crate::pipeline::skip_kind("draw") {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::note_why("skipped kind draw".into());
+            return;
+        }
         let rects = self.topology == RECTANGLES && !self.draws_rectangles();
-        let ran = self.prepare(list, false) && (!rects || self.rectangles(list, vertices, first));
+        let pipe = crate::pipeline::host_pipeline(self.pipeline as This);
+        let ran = self.prepare(list, false)
+            && (!rects || self.rectangles(list, vertices, first))
+            && !pipe
+                .as_ref()
+                .is_some_and(|p| drop_if_null_uav(self.null_uav, &p.name));
         if ran {
             // Rectangles were expanded into their own vertex buffers.
             let (count, from) = if rects {
@@ -1542,9 +1593,15 @@ impl State {
                 (vertices, first)
             };
             #[cfg(feature = "diagnostics")]
-            list.note_op(|| self.op_text(format!("draw {count}x{instances}"), false, false));
-        #[cfg(feature = "diagnostics")]
-        crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || self.op_text(format!("draw {count}x{instances}"), false, true));
+            {
+                let mark = self.op_text(format!("draw {count}x{instances}"), false, false);
+                crate::host::note_recent_gpu_op(mark.clone());
+                list.note_op(|| mark);
+            }
+            #[cfg(feature = "diagnostics")]
+            crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || {
+                self.op_text(format!("draw {count}x{instances}"), false, true)
+            });
             // SAFETY: an open list with everything set.
             unsafe {
                 list.list
@@ -1632,6 +1689,12 @@ impl State {
     ) {
         #[cfg(feature = "diagnostics")]
         self.trace("indexed", indices, first);
+        #[cfg(feature = "diagnostics")]
+        if crate::pipeline::skip_kind("indexed") {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::note_why("skipped kind indexed".into());
+            return;
+        }
         let rects = self.topology == RECTANGLES && !self.draws_rectangles();
         if rects {
             once!("indexed rectangles not drawn");
@@ -1639,9 +1702,15 @@ impl State {
         let ran = !rects && self.prepare(list, true);
         if ran {
             #[cfg(feature = "diagnostics")]
-            list.note_op(|| self.op_text(format!("indexed {indices}x{instances}"), false, false));
-        #[cfg(feature = "diagnostics")]
-        crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || self.op_text(format!("indexed {indices}x{instances}"), false, true));
+            {
+                let mark = self.op_text(format!("indexed {indices}x{instances}"), false, false);
+                crate::host::note_recent_gpu_op(mark.clone());
+                list.note_op(|| mark);
+            }
+            #[cfg(feature = "diagnostics")]
+            crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || {
+                self.op_text(format!("indexed {indices}x{instances}"), false, true)
+            });
             // SAFETY: an open list with everything set.
             unsafe {
                 list.list
@@ -1731,6 +1800,11 @@ impl State {
         count: Option<u64>,
     ) -> bool {
         // Skip before the argument clamp can mutate the indirect buffer.
+        #[cfg(feature = "diagnostics")]
+        if crate::pipeline::skip_indirect_kind(kind) {
+            crate::pipeline::note_why(format!("skipped kind indirect/{kind}"));
+            return false;
+        }
         #[cfg(feature = "diagnostics")]
         if crate::pipeline::is_skipped(self.pipeline as This) {
             crate::pipeline::note_drop(self.pipeline as This);
@@ -1873,7 +1947,15 @@ impl State {
                 (self.topology != RECTANGLES || self.draws_rectangles())
                     && self.prepare(list, kind == INDEXED)
             }
-            MESH => self.prepare_for(list, false, true),
+            MESH => {
+                let ok = self.prepare_for(list, false, true);
+                if ok && self.null_uav && skip_null_uav_dispatches() {
+                    null_uav_dropped(&p.name);
+                    false
+                } else {
+                    ok
+                }
+            }
             DISPATCH => match crate::pipeline::host_pipeline(self.pipeline as This) {
                 Some(p) if p.compute => {
                     crate::twin::begin();
@@ -1909,14 +1991,6 @@ impl State {
             return false;
         }
         #[cfg(feature = "diagnostics")]
-        list.note_op(|| {
-            self.op_text(
-                format!("indirect kind {kind} max {max} at {arguments:#x}"),
-                kind == DISPATCH,
-                false,
-            )
-        });
-        #[cfg(feature = "diagnostics")]
         crate::capture::pass(list, self.targets.first().copied().unwrap_or(0), || {
             self.op_text(
                 format!(
@@ -1937,16 +2011,35 @@ impl State {
             // SAFETY: an open list; the barrier names no resource.
             unsafe { list.list.ResourceBarrier(&[barrier]) };
         }
+        // Marker immediately before ExecuteIndirect so DRED pairs it; also
+        // keep a process-wide ring (hung lists are often not in `runs`).
+        #[cfg(feature = "diagnostics")]
+        {
+            let mark = self.op_text(
+                format!("indirect kind {kind} max {max} at {arguments:#x}"),
+                kind == DISPATCH,
+                false,
+            );
+            crate::host::note_recent_gpu_op(mark.clone());
+            list.note_op(|| mark);
+        }
         // SAFETY: an open list with everything set; the scratch buffers and
         // host copies are kept alive by the list, and the signature is cached.
+        //
+        // Pass no count buffer: the clamp already applied min(max, title count)
+        // and zero-filled inactive scratch slots (indirect.rs). Feeding the
+        // title count resource into ExecuteIndirect left that buffer without a
+        // UAV→INDIRECT_ARGUMENT transition and could disagree with scratch —
+        // a hang class on AMD (RX 6600 TDR bisect, 2026-11-27).
+        let _ = counter;
         unsafe {
             list.list.ExecuteIndirect(
                 &signature,
                 max,
                 arg_buffer,
                 bounded_at,
-                counter.as_ref().map(|(s, _)| &s.buffer),
-                counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
+                None,
+                0,
             )
         };
         if inline {

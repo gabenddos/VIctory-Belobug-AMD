@@ -294,6 +294,7 @@ fn spare() -> Option<Arc<crate::host::HostList>> {
         Ok(list) => Some(Arc::new(list)),
         Err(error) => {
             tracing::warn!(%error, "no host command list");
+            crate::host::note_device_removed_error(&error);
             None
         }
     }
@@ -393,6 +394,7 @@ fn new_list(kind: u32, allocator: This, iid: *const Iid, out: *mut This) -> HRES
                 Ok(list) => Some(Arc::new(list)),
                 Err(e) => {
                     tracing::warn!(error = %e, "no host command list");
+                    crate::host::note_device_removed_error(&e);
                     None
                 }
             })

@@ -468,9 +468,83 @@ fn skipped_shader(p: &Pipeline) -> Option<&str> {
         .map(|shader| shader.hash.as_str())
 }
 
+/// Whole classes of GPU work to drop (`VICTORY_SKIP_KINDS`, diagnostics):
+/// `compute`, `mesh`, `draw`, `indexed`, `indirect` (comma-separated).
+/// For binary-searching hangs without listing every hash.
+#[cfg(all(windows, feature = "diagnostics"))]
+#[derive(Clone, Copy, Default)]
+struct SkipKinds {
+    compute: bool,
+    mesh: bool,
+    draw: bool,
+    indexed: bool,
+    indirect: bool,
+}
+
+#[cfg(all(windows, feature = "diagnostics"))]
+fn skip_kinds() -> SkipKinds {
+    static KINDS: OnceLock<SkipKinds> = OnceLock::new();
+    *KINDS.get_or_init(|| {
+        let value = std::env::var("VICTORY_SKIP_KINDS").unwrap_or_default();
+        let mut k = SkipKinds::default();
+        for part in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match part.to_ascii_lowercase().as_str() {
+                "compute" | "dispatch" => k.compute = true,
+                "mesh" => k.mesh = true,
+                "draw" => k.draw = true,
+                "indexed" | "index" => k.indexed = true,
+                "indirect" => k.indirect = true,
+                other => tracing::warn!(kind = other, "VICTORY_SKIP_KINDS unknown token"),
+            }
+        }
+        if k.compute || k.mesh || k.draw || k.indexed || k.indirect {
+            tracing::info!(
+                compute = k.compute,
+                mesh = k.mesh,
+                draw = k.draw,
+                indexed = k.indexed,
+                indirect = k.indirect,
+                "VICTORY_SKIP_KINDS on"
+            );
+        }
+        k
+    })
+}
+
 #[cfg(all(windows, feature = "diagnostics"))]
 pub(crate) fn is_skipped(this: This) -> bool {
     !this.is_null() && skipped_shader(pipeline(this)).is_some()
+}
+
+/// True if this class of work is dropped by `VICTORY_SKIP_KINDS`.
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn skip_kind(kind: &str) -> bool {
+    let k = skip_kinds();
+    match kind {
+        "compute" => k.compute,
+        "mesh" => k.mesh,
+        "draw" => k.draw,
+        "indexed" => k.indexed,
+        "indirect" => k.indirect,
+        _ => false,
+    }
+}
+
+/// True if an `ExecuteIndirect` of title `kind` (0 draw, 1 indexed, 2
+/// dispatch, 10 mesh) is dropped by `VICTORY_SKIP_KINDS`.
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn skip_indirect_kind(kind: u32) -> bool {
+    let k = skip_kinds();
+    if k.indirect {
+        return true;
+    }
+    match kind {
+        0 => k.draw,
+        1 => k.indexed,
+        2 => k.compute,
+        10 => k.mesh,
+        _ => false,
+    }
 }
 
 /// Counts a draw or dispatch of `this` intentionally skipped or dropped
