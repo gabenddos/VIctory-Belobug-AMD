@@ -1099,7 +1099,10 @@ impl State {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        if !list.charge_groups(groups) {
+        // Weight compute like a soft mip-chain tax: raw group counts let
+        // 20x12+10x6+5x3+3x2 of one shader pack under 1024 and still TDR
+        // (run-20261127-053841, compute 4edee813 / 04be1ad6).
+        if !list.charge_groups(groups.saturating_mul(4)) {
             once!(x, y, z, "a dispatch past the list's group budget dropped");
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
@@ -2051,11 +2054,11 @@ impl State {
             }
             return false;
         }
-        // Worst-case charge against the list budget. Mesh/compute EI used 512;
-        // DRAW EI floods (1d2c/72c7, run-20261127-051957) were uncharged.
+        // Worst-case charge against the list budget. DRAW EI at 128 let eight
+        // 1d2c records fill one list and still TDR (run-20261127-053116).
         let ei_cost = match kind {
             MESH | DISPATCH => 512,
-            DRAW | INDEXED => 128,
+            DRAW | INDEXED => 1024,
             _ => 0,
         };
         if ei_cost != 0 && !list.charge_groups(u64::from(max.max(1)) * ei_cost) {

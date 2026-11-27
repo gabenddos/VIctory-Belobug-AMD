@@ -360,6 +360,12 @@ as **spotlights for code**, not a quarantine list to enlarge.
   + heavy indexed. Title also `E_OUTOFMEMORY` breakpoint after remove.
   Draw clamp 2^16/2^20; DRAW/INDEXED EI charge list budget (128); direct
   draws charge vert×inst/1024.
+- Next: ~frame 14541, same DRAW EI fingerprint (`25eb`/`1d7b`/`72c7`/`1d2c`).
+  Eight × cost-128 filled the list budget. DRAW EI cost → **1024** (one per
+  list); built-in quarantine of those four VS hashes (locked set, not peel).
+- Next: DRAW quarantine on; hang is compute **mip-chain** `4edee813` /
+  `04be1ad6` (20×12→3×2) plus mixed draws. Compute list charge ×4; quarantine
+  those two CS hashes; LoopLimit 32.
 
 ### Repro after rebuild (no new hashes)
 

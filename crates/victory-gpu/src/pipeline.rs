@@ -455,16 +455,48 @@ fn parse_skip_hashes(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Locked DRAW-EI hang VS hashes (AMD RX 6600 TDR bisect). Recur across
+/// runs as `kind 0` floods with many PS partners; listed in
+/// `docs/tdr-bisect-amd.md` — not a peel treadmill, a fixed quarantine.
+#[cfg(all(windows, feature = "diagnostics"))]
+const AMD_DRAW_HANG_VS: &[&str] = &[
+    "25ebc92075b62822",
+    "1d7b30217b395cd8",
+    "72c739b61097456d",
+    "1d2c970773ce2183",
+];
+
+/// Compute mip-chain hangers (AMD RX 6600): same shader dispatched at
+/// 20×12 / 10×6 / 5×3 / 3×2 in one trail (run-20261127-053841).
+const AMD_COMPUTE_HANG: &[&str] = &["4edee813f2d43b22", "04be1ad677ff1627"];
+
 #[cfg(all(windows, feature = "diagnostics"))]
 fn skipped_shader(p: &Pipeline) -> Option<&str> {
     static HASHES: OnceLock<Vec<String>> = OnceLock::new();
+    static AMD_ONCE: std::sync::Once = std::sync::Once::new();
     let hashes = HASHES.get_or_init(|| {
         let value = std::env::var("VICTORY_SKIP_PIPELINES").unwrap_or_default();
         parse_skip_hashes(&value)
     });
     p.shaders
         .iter()
-        .find(|shader| shader.hair || !hashes.is_empty() && hashes.contains(&shader.hash))
+        .find(|shader| {
+            let amd_vs = AMD_DRAW_HANG_VS.contains(&shader.hash.as_str());
+            let amd_cs = AMD_COMPUTE_HANG.contains(&shader.hash.as_str());
+            if amd_vs || amd_cs {
+                AMD_ONCE.call_once(|| {
+                    tracing::warn!(
+                        draw_vs = ?AMD_DRAW_HANG_VS,
+                        compute = ?AMD_COMPUTE_HANG,
+                        "built-in AMD hang-shader quarantine on"
+                    );
+                });
+            }
+            shader.hair
+                || amd_vs
+                || amd_cs
+                || (!hashes.is_empty() && hashes.contains(&shader.hash))
+        })
         .map(|shader| shader.hash.as_str())
 }
 
