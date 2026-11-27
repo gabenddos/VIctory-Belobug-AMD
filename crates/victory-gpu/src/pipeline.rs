@@ -585,14 +585,19 @@ pub(crate) extern "system" fn create_compute(
     };
     let shader = copy("compute", &desc.stage);
     // A container of another compiler's code only (`ACCC`: Grand Theft Auto
-    // VI's upscaler passes) does not run here: the title is told, and does
-    // without (`VICTORY_ACCC=1` takes them, their dispatches are dropped).
+    // VI's upscaler passes) does not run here. Refusing create tells the title
+    // to do without (native scene resolution). Taking them (`VICTORY_ACCC=1`)
+    // and then dropping their dispatches leaves the Series S scene plane black.
     #[cfg(windows)]
     if let Some(s) = &shader
         && victory_shader::Container::parse(&s.container)
             .is_ok_and(|c| c.part(victory_shader::FourCC::DXIL).is_none())
-        && std::env::var("VICTORY_ACCC").as_deref() == Ok("0")
+        && std::env::var("VICTORY_ACCC").as_deref() != Ok("1")
     {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            tracing::info!("ACCC upscaler pipelines refused (set VICTORY_ACCC=1 to take them)");
+        });
         tracing::warn!(hash = %s.hash, "a compute pipeline without DXIL is not made");
         if !out.is_null() {
             // SAFETY: the title's out pointer.

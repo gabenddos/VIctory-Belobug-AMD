@@ -214,6 +214,17 @@ fn title_dll(host: &victory_hle::HostPolicy, dll: &str) -> bool {
     !host.allows(dll) && !victory_hle::registry().iter().any(|m| m.serves(dll))
 }
 
+/// FidelityFX / FSR upscaler DLLs (Series S). They need hardware this host
+/// often lacks (FSR4 on RDNA2); when they load and then fail, the scene plane
+/// stays black. Refused unless `VICTORY_FSR=1`.
+#[cfg(windows)]
+fn fidelityfx_refused(file: &str) -> bool {
+    let name = file.rsplit(['\\', '/']).next().unwrap_or(file);
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("amd_fidelityfx_")
+        && std::env::var("VICTORY_FSR").as_deref() != Ok("1")
+}
+
 /// Title DLLs the title loads itself (`LoadLibrary`) that nothing imports,
 /// e.g. Grand Theft Auto VI's upscaler behind its FidelityFX loader.
 #[cfg(windows)]
@@ -242,6 +253,10 @@ impl LateDlls {
         // Waits while another thread initialises a DLL; a `DllMain` that
         // loads another DLL re-enters.
         self.lock.hold(|| {
+            if fidelityfx_refused(file) {
+                println!("FidelityFX / FSR refused ({file}; set VICTORY_FSR=1 to allow)");
+                anyhow::bail!("FidelityFX / FSR refused");
+            }
             if let Some(base) = image_named(file) {
                 return Ok(Some(base));
             }
