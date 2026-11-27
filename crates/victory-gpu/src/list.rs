@@ -648,6 +648,35 @@ extern "system" fn copy_buffer_region(
     let _ = (this, dst, dst_offset, src, src_offset, len);
 }
 
+/// Copy `src` onto `dst` on an open title command list (FidelityFX stub
+/// passthrough: colour → upscaler output with no scale).
+#[cfg(windows)]
+pub fn copy_resource_on(list: This, dst: This, src: This) -> bool {
+    let Some(list) = host_list(list) else {
+        return false;
+    };
+    list.count_write();
+    list.count_work();
+    if let (Some(to), Some(from)) = (
+        crate::resource::host_resource(dst),
+        crate::resource::host_resource(src),
+    ) {
+        if crate::resource::skipped_mips(dst) + crate::resource::skipped_mips(src) > 0 {
+            return false;
+        }
+        if crate::texture::title_written(from) {
+            crate::texture::upload(list, src, from);
+        }
+        ensure_state(list, dst, COPY_DEST);
+        ensure_state(list, src, COPY_SOURCE);
+        crate::texture::host_written(dst);
+        // SAFETY: an open list and live textures.
+        unsafe { list.list.CopyResource(to, from) };
+        return true;
+    }
+    false
+}
+
 extern "system" fn copy_resource(this: This, dst: This, src: This) {
     #[cfg(windows)]
     if let Some(list) = host_list(this) {

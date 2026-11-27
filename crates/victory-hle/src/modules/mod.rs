@@ -19,6 +19,8 @@ pub mod dstorage;
 #[cfg(windows)]
 pub mod dualsense;
 #[cfg(windows)]
+pub mod fidelityfx;
+#[cfg(windows)]
 pub mod files;
 pub mod gameinput;
 pub mod kernel;
@@ -64,6 +66,11 @@ pub(crate) fn all() -> Vec<HleModule> {
     all.push(dstorage::module());
     #[cfg(windows)]
     all.push(files::module());
+    // Opt out with VICTORY_FSR=1 so the title's amd_fidelityfx_* DLLs load.
+    #[cfg(windows)]
+    if std::env::var("VICTORY_FSR").as_deref() != Ok("1") {
+        all.push(fidelityfx::module());
+    }
     #[cfg(windows)]
     all.push(lifecycle::module());
     #[cfg(windows)]

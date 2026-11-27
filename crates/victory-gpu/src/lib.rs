@@ -65,6 +65,8 @@ mod ambient;
 #[cfg(windows)]
 mod compose;
 #[cfg(windows)]
+pub mod fsr;
+#[cfg(windows)]
 mod twin;
 #[cfg(windows)]
 mod texpool;

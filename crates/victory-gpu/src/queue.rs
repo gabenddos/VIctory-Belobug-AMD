@@ -415,7 +415,16 @@ fn show(shown: Option<object::Ref>, over: Option<object::Ref>) {
     if let Some(over) = plane(over.as_ref())
         && let Some(host) = crate::host::host()
     {
-        host.present_over(plane(shown.as_ref()), over, frame);
+        // Series S: UI over FSR output. When FSR is stubbed, present the
+        // pre-upscale colour as the scene instead of the empty output.
+        let fsr = crate::fsr::color_plane();
+        if fsr.is_some() {
+            static FSR_SCENE: std::sync::Once = std::sync::Once::new();
+            FSR_SCENE.call_once(|| {
+                tracing::info!("presenting FSR stub colour as the scene plane");
+            });
+        }
+        host.present_over(fsr.or_else(|| plane(shown.as_ref())), over, frame);
         return;
     }
     #[cfg(windows)]

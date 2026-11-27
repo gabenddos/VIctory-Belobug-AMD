@@ -208,21 +208,29 @@ fn watch(base: usize, size: usize) {
     });
 }
 
-/// DLLs the host or our runtime provide are never taken from the title.
-#[cfg(windows)]
-fn title_dll(host: &victory_hle::HostPolicy, dll: &str) -> bool {
-    !host.allows(dll) && !victory_hle::registry().iter().any(|m| m.serves(dll))
-}
-
 /// FidelityFX / FSR upscaler DLLs (Series S). They need hardware this host
-/// often lacks (FSR4 on RDNA2); when they load and then fail, the scene plane
-/// stays black. Refused unless `VICTORY_FSR=1`.
+/// often lacks (FSR4 on RDNA2); when they load and then fall back to NewBE,
+/// the scene stays black and the title often crashes. Refused unless
+/// `VICTORY_FSR=1`.
 #[cfg(windows)]
 fn fidelityfx_refused(file: &str) -> bool {
+    if std::env::var("VICTORY_FSR").as_deref() == Ok("1") {
+        return false;
+    }
     let name = file.rsplit(['\\', '/']).next().unwrap_or(file);
     let lower = name.to_ascii_lowercase();
     lower.starts_with("amd_fidelityfx_")
-        && std::env::var("VICTORY_FSR").as_deref() != Ok("1")
+        || lower.contains("fidelityfx")
+        || lower.contains("fsr4")
+}
+
+/// DLLs the host or our runtime provide are never taken from the title.
+/// FidelityFX / FSR images are refused here too so import walks skip them.
+#[cfg(windows)]
+fn title_dll(host: &victory_hle::HostPolicy, dll: &str) -> bool {
+    !fidelityfx_refused(dll)
+        && !host.allows(dll)
+        && !victory_hle::registry().iter().any(|m| m.serves(dll))
 }
 
 /// Title DLLs the title loads itself (`LoadLibrary`) that nothing imports,
@@ -253,10 +261,10 @@ impl LateDlls {
         // Waits while another thread initialises a DLL; a `DllMain` that
         // loads another DLL re-enters.
         self.lock.hold(|| {
-            if fidelityfx_refused(file) {
-                println!("FidelityFX / FSR refused ({file}; set VICTORY_FSR=1 to allow)");
-                anyhow::bail!("FidelityFX / FSR refused");
-            }
+            // FidelityFX is an HLE stub (`amd_fidelityfx_*`); returning
+            // `Ok(None)` lets `LoadLibrary` fall through to that module.
+            // Do not Err here: that looks like MODULE_NOT_FOUND and aborts
+            // before the stub is found.
             if let Some(base) = image_named(file) {
                 return Ok(Some(base));
             }

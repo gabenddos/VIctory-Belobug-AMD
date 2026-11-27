@@ -145,11 +145,10 @@ The first launch after a build translates every shader and builds about
 ### Known problems
 
 - On RDNA2 (e.g. RX 6600) Series S FidelityFX / FSR4 does not run usefully:
-  the loader and upscaler DLLs are refused unless `VICTORY_FSR=1`, and ACCC
-  upscaler pipelines are refused unless `VICTORY_ACCC=1`, so the title can
-  present the pre-upscale scene (often near 720p on Series S) instead of a
-  black FSR output. Menus can look fine while the world stays black if those
-  paths still run and drop.
+  `amd_fidelityfx_*` is an HLE 1:1 passthrough (dummy context, native
+  resolution queries, colour→output copy on dispatch; `VICTORY_FSR=1`
+  loads the title DLLs). ACCC upscaler pipelines are refused unless
+  `VICTORY_ACCC=1`.
 - With the in-game phone out the world is unlit (see the table).
 - The per-draw descriptor slots are few for the heaviest places: when they
   run out, some draws of a frame are dropped.
